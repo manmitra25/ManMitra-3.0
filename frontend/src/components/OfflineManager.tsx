@@ -25,6 +25,7 @@ interface OfflineContextType {
   isOnline: boolean;
   isOfflineMode: boolean;
   toggleOfflineMode: () => void;
+  forceOnlineMode: () => void;
   syncData: () => Promise<void>;
   saveOfflineData: (key: keyof OfflineData, data: any) => void;
   getOfflineData: (key: keyof OfflineData) => any;
@@ -111,6 +112,20 @@ export function OfflineProvider({ children }: OfflineProviderProps) {
 
   const toggleOfflineMode = () => {
     setIsOfflineMode(!isOfflineMode);
+    // Force online mode when toggling
+    if (!isOfflineMode) {
+      setIsOnline(true);
+      setShowOfflineAlert(false);
+    }
+  };
+
+  const forceOnlineMode = () => {
+    setIsOnline(true);
+    setIsOfflineMode(false);
+    setShowOfflineAlert(false);
+    // Clear any cached offline data that might be causing issues
+    localStorage.removeItem('manmitra-offline-data');
+    console.log('🔄 Forced online mode - cleared offline cache');
   };
 
   const saveOfflineData = (key: keyof OfflineData, data: any) => {
@@ -168,6 +183,7 @@ export function OfflineProvider({ children }: OfflineProviderProps) {
     isOnline,
     isOfflineMode,
     toggleOfflineMode,
+    forceOnlineMode,
     syncData,
     saveOfflineData,
     getOfflineData,
@@ -184,6 +200,7 @@ export function OfflineProvider({ children }: OfflineProviderProps) {
         pendingSyncCount={pendingSyncCount}
         onDismiss={() => setShowOfflineAlert(false)}
         onSync={syncData}
+        onForceOnline={forceOnlineMode}
       />
     </OfflineContext.Provider>
   );
@@ -195,6 +212,7 @@ interface OfflineNotificationProps {
   pendingSyncCount: number;
   onDismiss: () => void;
   onSync: () => void;
+  onForceOnline: () => void;
 }
 
 function OfflineNotification({ 
@@ -202,7 +220,8 @@ function OfflineNotification({
   isOnline, 
   pendingSyncCount, 
   onDismiss, 
-  onSync 
+  onSync,
+  onForceOnline
 }: OfflineNotificationProps) {
   if (!show) return null;
 
@@ -240,6 +259,16 @@ function OfflineNotification({
                 )}
                 
                 <div className="flex gap-2">
+                  {!isOnline && (
+                    <Button 
+                      size="sm" 
+                      onClick={onForceOnline}
+                      className="h-6 px-2 text-xs bg-blue-600 hover:bg-blue-700 text-white"
+                    >
+                      <Wifi className="h-3 w-3 mr-1" />
+                      Force Online
+                    </Button>
+                  )}
                   {isOnline && pendingSyncCount > 0 && (
                     <Button 
                       size="sm" 

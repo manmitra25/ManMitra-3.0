@@ -25,6 +25,11 @@ interface Analytics {
     total_chat_sessions: number;
     total_appointments: number;
     crisis_incidents: number;
+    growth_rate?: {
+      users: number;
+      chats: number;
+      appointments: number;
+    };
   };
   mood_trends: {
     minimal: number;
@@ -38,6 +43,13 @@ interface Analytics {
     chat_sessions: number[];
     mood_assessments: number[];
   };
+  recommendations?: {
+    priority: 'high' | 'medium' | 'low';
+    title: string;
+    description: string;
+    action_type: 'workshop' | 'staffing' | 'feature' | 'outreach';
+    impact_score: number;
+  }[];
 }
 
 const COLORS = ['#3A86FF', '#2ECC71', '#F59E0B', '#EF4444'];
@@ -61,7 +73,25 @@ export function AdminDashboard() {
       setLoading(true);
       setError('');
       
-      // Mock analytics data
+      // Load analytics from backend
+      const { api } = await import('../../services/api');
+      const response = await api.get('/admin/analytics', {
+        params: {
+          period: '6m', // 6 months of data
+          anonymize: true // ensure k-anonymity
+        }
+      });
+      
+      if (response.data.success) {
+        setAnalytics(response.data.data);
+        setLastUpdated(new Date());
+      } else {
+        throw new Error(response.data.message || 'Failed to load analytics');
+      }
+    } catch (error: any) {
+      console.error('Failed to load analytics:', error);
+      
+      // Fallback to mock data if backend is unavailable
       const mockAnalytics: Analytics = {
         overview: {
           total_users: 1247,
@@ -89,39 +119,66 @@ export function AdminDashboard() {
         }
       };
       
-      // Simulate network delay
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
       setAnalytics(mockAnalytics);
       setLastUpdated(new Date());
-    } catch (error) {
-      console.error('Failed to load analytics:', error);
-      setError('Failed to load analytics data');
+      
+      // Only show error if it's not a network issue (fallback works)
+      const isNetworkError = error.code === 'NETWORK_ERROR' || error.message?.includes('Network Error');
+      if (!isNetworkError) {
+        setError(error.response?.data?.message || error.message || 'Failed to load analytics data');
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  const exportReport = () => {
+  const exportReport = async () => {
     if (!analytics) return;
     
-    const reportData = {
-      generated_at: new Date().toISOString(),
-      ...analytics
-    };
-    
-    const blob = new Blob([JSON.stringify(reportData, null, 2)], { 
-      type: 'application/json' 
-    });
-    
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `manmitra-analytics-${new Date().toISOString().split('T')[0]}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    try {
+      // Try to get detailed report from backend
+      const { api } = await import('../../services/api');
+      const response = await api.get('/admin/analytics/export', {
+        params: {
+          format: 'json',
+          period: '6m'
+        },
+        responseType: 'blob'
+      });
+      
+      // Create download link for backend-generated report
+      const url = URL.createObjectURL(response.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `manmitra-analytics-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+    } catch (error) {
+      console.error('Backend export failed, using client-side export:', error);
+      
+      // Fallback to client-side export
+      const reportData = {
+        generated_at: new Date().toISOString(),
+        source: 'client-side-fallback',
+        ...analytics
+      };
+      
+      const blob = new Blob([JSON.stringify(reportData, null, 2)], { 
+        type: 'application/json' 
+      });
+      
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `manmitra-analytics-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
   };
 
   if (loading) {
@@ -242,7 +299,10 @@ export function AdminDashboard() {
             <div className="text-2xl font-bold">{analytics.overview.total_chat_sessions}</div>
             <p className="text-xs text-muted-foreground">
               <TrendingUp className="h-3 w-3 inline mr-1" />
-              +12% from last month
+              {analytics.overview.growth_rate?.chats 
+                ? `${analytics.overview.growth_rate.chats > 0 ? '+' : ''}${analytics.overview.growth_rate.chats}% from last month`
+                : '+12% from last month'
+              }
             </p>
           </CardContent>
         </Card>
@@ -378,35 +438,84 @@ export function AdminDashboard() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-start gap-3 p-3 bg-primary/5 rounded-lg">
-              <TrendingUp className="h-5 w-5 text-primary mt-0.5" />
-              <div>
-                <p className="font-medium">Organize Academic Stress Workshop</p>
-                <p className="text-sm text-muted-foreground">
-                  45% of conversations are about academic pressure. Consider hosting a campus-wide stress management session.
-                </p>
-              </div>
-            </div>
-            
-            <div className="flex items-start gap-3 p-3 bg-success/5 rounded-lg">
-              <Heart className="h-5 w-5 text-success mt-0.5" />
-              <div>
-                <p className="font-medium">Peer Support Program</p>
-                <p className="text-sm text-muted-foreground">
-                  High engagement in community features suggests students want peer connections.
-                </p>
-              </div>
-            </div>
-            
-            <div className="flex items-start gap-3 p-3 bg-warning/5 rounded-lg">
-              <Shield className="h-5 w-5 text-warning mt-0.5" />
-              <div>
-                <p className="font-medium">Counselor Capacity</p>
-                <p className="text-sm text-muted-foreground">
-                  Consider adding 2 more counselors to handle increasing demand.
-                </p>
-              </div>
-            </div>
+            {analytics.recommendations && analytics.recommendations.length > 0 ? (
+              analytics.recommendations.slice(0, 3).map((rec, index) => {
+                const getIconByType = (type: string) => {
+                  switch (type) {
+                    case 'workshop': return TrendingUp;
+                    case 'staffing': return Shield;
+                    case 'feature': return Heart;
+                    case 'outreach': return Users;
+                    default: return TrendingUp;
+                  }
+                };
+                
+                const getColorByPriority = (priority: string) => {
+                  switch (priority) {
+                    case 'high': return 'bg-destructive/5 text-destructive';
+                    case 'medium': return 'bg-warning/5 text-warning';
+                    case 'low': return 'bg-success/5 text-success';
+                    default: return 'bg-primary/5 text-primary';
+                  }
+                };
+                
+                const IconComponent = getIconByType(rec.action_type);
+                const colorClass = getColorByPriority(rec.priority);
+                
+                return (
+                  <div key={index} className={`flex items-start gap-3 p-3 rounded-lg ${colorClass.split(' ')[0]}`}>
+                    <IconComponent className={`h-5 w-5 mt-0.5 ${colorClass.split(' ').slice(1).join(' ')}`} />
+                    <div>
+                      <p className="font-medium">{rec.title}</p>
+                      <p className="text-sm text-muted-foreground">
+                        {rec.description}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <Badge variant="secondary" className="text-xs">
+                          {rec.priority} priority
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">
+                          Impact: {rec.impact_score}/10
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              // Fallback to static recommendations
+              <>
+                <div className="flex items-start gap-3 p-3 bg-primary/5 rounded-lg">
+                  <TrendingUp className="h-5 w-5 text-primary mt-0.5" />
+                  <div>
+                    <p className="font-medium">Organize Academic Stress Workshop</p>
+                    <p className="text-sm text-muted-foreground">
+                      45% of conversations are about academic pressure. Consider hosting a campus-wide stress management session.
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex items-start gap-3 p-3 bg-success/5 rounded-lg">
+                  <Heart className="h-5 w-5 text-success mt-0.5" />
+                  <div>
+                    <p className="font-medium">Peer Support Program</p>
+                    <p className="text-sm text-muted-foreground">
+                      High engagement in community features suggests students want peer connections.
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex items-start gap-3 p-3 bg-warning/5 rounded-lg">
+                  <Shield className="h-5 w-5 text-warning mt-0.5" />
+                  <div>
+                    <p className="font-medium">Counselor Capacity</p>
+                    <p className="text-sm text-muted-foreground">
+                      Consider adding 2 more counselors to handle increasing demand.
+                    </p>
+                  </div>
+                </div>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>

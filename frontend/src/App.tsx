@@ -88,6 +88,10 @@ function AppContent() {
                 isAnonymous={!user}
                 anonymousMessagesLeft={anonymousMessagesLeft}
                 onSignUpPrompt={handleSignUpPrompt}
+                onCrisisDetected={(crisisLevel, message) => {
+                  console.log('Crisis detected:', crisisLevel, message);
+                  // Crisis management is handled within BestieChat component
+                }}
               />
             );
           case 'resources':

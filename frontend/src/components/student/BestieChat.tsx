@@ -6,6 +6,8 @@ import { Textarea } from '../ui/textarea';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '../ui/dialog';
 import { MessageCircle, Send, Mic, Heart, Shield, AlertTriangle, Phone, BookOpen } from 'lucide-react';
 import { CrisisDetection } from '../CrisisManagement';
+import { useAuth } from '../auth/AuthProvider';
+import webSocketService from '../../services/websocket';
 
 interface Message {
   id: string;
@@ -13,6 +15,8 @@ interface Message {
   sender: 'user' | 'bestie';
   timestamp: Date;
   agent?: 'listener' | 'screener' | 'tone' | 'nudge';
+  crisisDetected?: boolean;
+  crisisLevel?: string;
 }
 
 interface Topic {
@@ -126,14 +130,17 @@ interface BestieChatProps {
   isAnonymous?: boolean;
   anonymousMessagesLeft?: number;
   onSignUpPrompt?: () => void;
+  onCrisisDetected?: (crisisLevel: string, message: string) => void;
 }
 
 export function BestieChat({ 
   language, 
   isAnonymous = true,
   anonymousMessagesLeft = 5,
-  onSignUpPrompt 
+  onSignUpPrompt,
+  onCrisisDetected
 }: BestieChatProps) {
+  const { user } = useAuth();
   const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
@@ -154,22 +161,110 @@ export function BestieChat({
     scrollToBottom();
   }, [messages]);
 
+  // Initialize WebSocket connection and listeners
+  useEffect(() => {
+    const initWebSocket = async () => {
+      try {
+        if (!webSocketService.isConnected()) {
+          await webSocketService.connect(user?.id);
+        }
+
+        // Listen for Bestie responses
+        webSocketService.on('bestie-response', (data) => {
+          const bestieMessage: Message = {
+            id: Date.now().toString() + '_ws',
+            content: data.response,
+            sender: 'bestie',
+            timestamp: new Date(),
+            agent: data.agent as 'listener' | 'screener' | 'tone' | 'nudge',
+            crisisDetected: data.crisisDetected
+          };
+
+          setMessages(prev => [...prev, bestieMessage]);
+          setIsTyping(false);
+        });
+
+        // Listen for crisis alerts
+        webSocketService.on('crisis-alert', (data) => {
+          setShowCrisisDialog(true);
+          onCrisisDetected?.(data.severity, 'Crisis detected in chat');
+        });
+
+        // Listen for login requests (anonymous limit reached)
+        webSocketService.on('request-login', (data) => {
+          onSignUpPrompt?.();
+        });
+
+      } catch (error) {
+        console.warn('WebSocket initialization failed, will use HTTP fallback:', error);
+        // Don't set offline mode immediately, let HTTP API work
+      }
+    };
+
+    if (selectedTopic) {
+      initWebSocket();
+    }
+
+    return () => {
+      // Cleanup WebSocket listeners
+      if (webSocketService.isConnected()) {
+        webSocketService.off('bestie-response', () => {});
+        webSocketService.off('crisis-alert', () => {});
+        webSocketService.off('request-login', () => {});
+      }
+    };
+  }, [selectedTopic, user?.id]);
+
   const handleTopicSelect = async (topicId: string) => {
     setSelectedTopic(topicId);
     const topic = t.topics.find(t => t.id === topicId);
     
-    // Generate a mock session ID
-    setSessionId(`session_${Date.now()}`);
-    
-    // Add initial Bestie message
-    const initialMessage: Message = {
-      id: '1',
-      content: `I'm here to listen and support you with ${topic?.title.toLowerCase()}. What's on your mind? 💙`,
-      sender: 'bestie',
-      timestamp: new Date()
-    };
-    
-    setMessages([initialMessage]);
+    try {
+      // Start chat session with backend
+      const { api } = await import('../../services/api');
+      const response = await api.post('/chat/start-session', {
+        topic: topicId,
+        language: language || 'en',
+        isAnonymous: isAnonymous
+      });
+      
+      const sessionData = response.data.data;
+      setSessionId(sessionData.sessionId);
+      
+      // Add initial Bestie message
+      const initialMessage: Message = {
+        id: sessionData.sessionId + '_initial',
+        content: sessionData.initialMessage || `I'm here to listen and support you with ${topic?.title.toLowerCase()}. What's on your mind? 💙`,
+        sender: 'bestie',
+        timestamp: new Date()
+      };
+      
+      setMessages([initialMessage]);
+      
+    } catch (error) {
+      console.error('Error starting chat session:', error);
+      
+      // Fallback to offline mode only if truly necessary
+      const fallbackSessionId = `session_${Date.now()}`;
+      setSessionId(fallbackSessionId);
+      
+      // Only set offline mode if the network is actually offline
+      if (!navigator.onLine) {
+        setIsOfflineMode(true);
+        console.log('🔌 Network is offline, using offline mode');
+      } else {
+        console.log('🔄 Session creation failed but network is online, will try HTTP fallback for messages');
+      }
+      
+      const initialMessage: Message = {
+        id: '1',
+        content: `I'm here to listen and support you with ${topic?.title.toLowerCase()}. What's on your mind? 💙`,
+        sender: 'bestie',
+        timestamp: new Date()
+      };
+      
+      setMessages([initialMessage]);
+    }
   };
 
   const simulateBestieResponse = (userMessage: string): Message => {
@@ -251,20 +346,112 @@ export function BestieChat({
       return;
     }
 
-    // Mock message handling - in offline mode, just log the message
-    console.log('Message sent:', messageContent);
-
-    // Simulate Bestie typing
+    // Show typing indicator
     setIsTyping(true);
-    setTimeout(async () => {
-      const bestieResponse = simulateBestieResponse(messageContent);
-      setMessages(prev => [...prev, bestieResponse]);
+
+    try {
+      // Try WebSocket first if connected
+      if (webSocketService.isConnected() && sessionId) {
+        webSocketService.sendChatMessage(sessionId, messageContent, language);
+        setIsTyping(true);
+        return; // Response will come via WebSocket
+      }
       
-      // Mock Bestie response handling - in offline mode, just log the response
-      console.log('Bestie response:', bestieResponse.content);
+      // Fallback to direct API call via Node.js backend
+      const { api } = await import('../../services/api');
       
+      console.log('Sending message to backend:', messageContent);
+      
+      const response = await api.post('/chat/send-message', {
+        sessionId: sessionId,
+        message: messageContent,
+        language: language || 'en'
+      });
+
+      console.log('Backend response:', response.data);
+      const backendResponse = response.data;
+      
+      if (backendResponse.success && backendResponse.data) {
+        const aiResponse = backendResponse.data;
+        
+        const bestieMessage: Message = {
+          id: Date.now().toString() + '_ai',
+          content: aiResponse.response,
+          sender: 'bestie',
+          timestamp: new Date(),
+          agent: aiResponse.agent || 'listener',
+          crisisDetected: aiResponse.crisisDetected || false,
+          crisisLevel: aiResponse.crisisLevel
+        };
+
+        setMessages(prev => [...prev, bestieMessage]);
+
+        // Handle crisis detection
+        if (aiResponse.crisisDetected && aiResponse.crisisLevel) {
+          setShowCrisisDialog(true);
+          onCrisisDetected?.(aiResponse.crisisLevel, messageContent);
+        }
+      } else {
+        throw new Error(backendResponse.message || 'Failed to get response from backend');
+      }
+
+    } catch (error) {
+      console.error('Error sending message to AI:', error);
+      
+      // Try direct FastAPI call as fallback before going offline
+      try {
+        console.log('Trying FastAPI direct call as fallback...');
+        const { aiApi } = await import('../../services/api');
+        
+        const aiResponse = await aiApi.post('/chat/ask', {
+          message: messageContent,
+          history: messages.slice(-10).map(m => ({
+            role: m.sender === 'user' ? 'user' : 'assistant',
+            content: m.content
+          })),
+          user_id: null,
+          locale: language || 'en',
+          session_id: sessionId
+        });
+        
+        console.log('FastAPI fallback response:', aiResponse.data);
+        
+        const bestieMessage: Message = {
+          id: Date.now().toString() + '_fastapi',
+          content: aiResponse.data.response,
+          sender: 'bestie',
+          timestamp: new Date(),
+          agent: aiResponse.data.agent || 'listener',
+          crisisDetected: aiResponse.data.crisis_detected || false,
+          crisisLevel: aiResponse.data.crisis_level
+        };
+        
+        setMessages(prev => [...prev, bestieMessage]);
+        
+        // Handle crisis detection
+        if (aiResponse.data.crisis_detected && aiResponse.data.crisis_level) {
+          setShowCrisisDialog(true);
+          onCrisisDetected?.(aiResponse.data.crisis_level, messageContent);
+        }
+        
+      } catch (fallbackError) {
+        console.error('FastAPI fallback also failed:', fallbackError);
+        
+        // Only now go to offline mode
+        if (!navigator.onLine) {
+          setIsOfflineMode(true);
+          console.log('🔌 Network is offline, using cached response');
+        } else {
+          console.log('⚠️ API calls failed but network is online, using fallback response');
+        }
+        
+        // Use simulated response as last resort
+        const offlineResponse = simulateBestieResponse(messageContent);
+        setMessages(prev => [...prev, offlineResponse]);
+      }
+    } finally {
       setIsTyping(false);
-    }, 1500);
+    }
   };
 
   const getAgentIndicator = (agent?: string) => {
@@ -328,8 +515,26 @@ export function BestieChat({
           </div>
           <div className="flex items-center gap-2">
             {isOfflineMode && (
-              <Badge variant="outline" className="bg-warning/20 text-warning border-warning/30">
-                Offline
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="bg-warning/20 text-warning border-warning/30">
+                  Offline Mode
+                </Badge>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setIsOfflineMode(false);
+                    console.log('🔄 Forcing online mode');
+                  }}
+                  className="text-xs h-6"
+                >
+                  Try Online
+                </Button>
+              </div>
+            )}
+            {!isOfflineMode && navigator.onLine && (
+              <Badge variant="outline" className="bg-green-100 text-green-600 border-green-300">
+                Online
               </Badge>
             )}
             {isAnonymous && (

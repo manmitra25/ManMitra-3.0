@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import { Progress } from '../ui/progress';
 import { BookOpen, Play, Clock, Users, CheckCircle, ArrowRight, Heart, Brain, Shield } from 'lucide-react';
+import { useAuth } from '../auth/AuthProvider';
 
 interface ResourcesHubProps {
   language: string;
@@ -25,6 +26,13 @@ interface Resource {
   progress?: number;
   isCompleted?: boolean;
   culturalContext?: 'general' | 'kashmir' | 'jammu';
+  content?: string;
+  prerequisites?: string[];
+  learningOutcomes?: string[];
+  author?: string;
+  tags?: string[];
+  rating?: number;
+  views?: number;
 }
 
 const resources: Resource[] = [
@@ -162,8 +170,120 @@ const getLocalizedText = (resource: Resource, field: keyof Resource, language: s
 };
 
 export function ResourcesHub({ language }: ResourcesHubProps) {
+  const { user } = useAuth();
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedResource, setSelectedResource] = useState<Resource | null>(null);
+  const [resources, setResources] = useState<Resource[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [userProgress, setUserProgress] = useState<Record<string, { progress: number; isCompleted: boolean }>>({});
+
+  // Load resources from backend
+  const loadResources = async () => {
+    try {
+      const { api } = await import('../../services/api');
+      const response = await api.get('/resources', {
+        params: {
+          category: selectedCategory !== 'all' ? selectedCategory : undefined,
+          language: language || 'en'
+        }
+      });
+      
+      if (response.data.success) {
+        const backendResources = response.data.data.resources || [];
+        
+        // Merge with user progress data
+        const resourcesWithProgress = backendResources.map((resource: Resource) => ({
+          ...resource,
+          progress: userProgress[resource.id]?.progress || resource.progress,
+          isCompleted: userProgress[resource.id]?.isCompleted || resource.isCompleted
+        }));
+        
+        setResources(resourcesWithProgress);
+      }
+    } catch (error) {
+      console.error('Error loading resources:', error);
+      // Fallback to mock data with user progress
+      const mockResources = resources.map(resource => ({
+        ...resource,
+        progress: userProgress[resource.id]?.progress || resource.progress,
+        isCompleted: userProgress[resource.id]?.isCompleted || resource.isCompleted
+      }));
+      setResources(mockResources);
+    }
+  };
+
+  // Load user progress from backend
+  const loadUserProgress = async () => {
+    if (!user) return;
+    
+    try {
+      const { api } = await import('../../services/api');
+      const response = await api.get('/resources/progress');
+      
+      if (response.data.success) {
+        setUserProgress(response.data.data.progress || {});
+      }
+    } catch (error) {
+      console.error('Error loading user progress:', error);
+    }
+  };
+
+  // Update resource progress
+  const updateProgress = async (resourceId: string, progress: number, isCompleted?: boolean) => {
+    if (!user) return;
+    
+    try {
+      const { api } = await import('../../services/api');
+      await api.post('/resources/progress', {
+        resourceId,
+        progress,
+        isCompleted: isCompleted || progress >= 100
+      });
+      
+      // Update local state
+      setUserProgress(prev => ({
+        ...prev,
+        [resourceId]: {
+          progress,
+          isCompleted: isCompleted || progress >= 100
+        }
+      }));
+      
+      // Update resource in list
+      setResources(prev => prev.map(resource => 
+        resource.id === resourceId 
+          ? { ...resource, progress, isCompleted: isCompleted || progress >= 100 }
+          : resource
+      ));
+      
+    } catch (error) {
+      console.error('Error updating progress:', error);
+    }
+  };
+
+  // Load data when component mounts or category/user changes
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      await loadUserProgress();
+      await loadResources();
+      setLoading(false);
+    };
+    
+    loadData();
+  }, [selectedCategory, user]);
+
+  // Start or continue a resource
+  const handleResourceAction = (resource: Resource) => {
+    // Simulate progress update (in real app, this would be based on actual completion)
+    const currentProgress = resource.progress || 0;
+    if (currentProgress < 100) {
+      const newProgress = Math.min(currentProgress + 25, 100);
+      updateProgress(resource.id, newProgress);
+    }
+    
+    console.log('Starting/continuing resource:', resource.id);
+  };
 
   const filteredResources = selectedCategory === 'all' 
     ? resources 
@@ -265,32 +385,45 @@ export function ResourcesHub({ language }: ResourcesHubProps) {
               <div className="bg-muted/50 p-6 rounded-lg">
                 <h3 className="text-lg mb-3">Resource Content</h3>
                 <p className="text-muted-foreground mb-4">
-                  This is a placeholder for the actual resource content. In a real implementation, 
-                  this would contain interactive modules, videos, audio guides, or step-by-step exercises.
+                  {selectedResource.content || 
+                    "This is a placeholder for the actual resource content. In a real implementation, this would contain interactive modules, videos, audio guides, or step-by-step exercises."
+                  }
                 </p>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <h4 className="font-medium">What you'll learn:</h4>
                     <ul className="text-sm text-muted-foreground space-y-1">
-                      <li>• Understanding core concepts</li>
-                      <li>• Practical techniques</li>
-                      <li>• Real-life applications</li>
-                      <li>• Progress tracking</li>
+                      {selectedResource.learningOutcomes?.map((outcome, index) => (
+                        <li key={index}>• {outcome}</li>
+                      )) || [
+                        <li key="1">• Understanding core concepts</li>,
+                        <li key="2">• Practical techniques</li>,
+                        <li key="3">• Real-life applications</li>,
+                        <li key="4">• Progress tracking</li>
+                      ]}
                     </ul>
                   </div>
                   <div className="space-y-2">
                     <h4 className="font-medium">Prerequisites:</h4>
                     <ul className="text-sm text-muted-foreground space-y-1">
-                      <li>• Basic understanding of emotions</li>
-                      <li>• Willingness to practice</li>
-                      <li>• Quiet environment</li>
+                      {selectedResource.prerequisites?.map((prereq, index) => (
+                        <li key={index}>• {prereq}</li>
+                      )) || [
+                        <li key="1">• Basic understanding of emotions</li>,
+                        <li key="2">• Willingness to practice</li>,
+                        <li key="3">• Quiet environment</li>
+                      ]}
                     </ul>
                   </div>
                 </div>
               </div>
               
               <div className="flex gap-3">
-                <Button className="flex-1">
+                <Button 
+                  className="flex-1"
+                  onClick={() => handleResourceAction(selectedResource)}
+                  disabled={!user}
+                >
                   <Play className="w-4 h-4 mr-2" />
                   {selectedResource.progress ? t.continue : t.startLearning}
                 </Button>
@@ -334,7 +467,23 @@ export function ResourcesHub({ language }: ResourcesHubProps) {
           </TabsList>
 
           <TabsContent value={selectedCategory}>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {loading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {[...Array(6)].map((_, i) => (
+              <Card key={i} className="animate-pulse">
+                <CardHeader>
+                  <div className="h-4 bg-muted rounded w-3/4 mb-2"></div>
+                  <div className="h-6 bg-muted rounded w-full mb-2"></div>
+                  <div className="h-4 bg-muted rounded w-5/6"></div>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-4 bg-muted rounded w-1/2"></div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {filteredResources.map((resource) => (
                 <Card 
                   key={resource.id} 
@@ -396,6 +545,7 @@ export function ResourcesHub({ language }: ResourcesHubProps) {
                 </Card>
               ))}
             </div>
+        )}
           </TabsContent>
         </Tabs>
 

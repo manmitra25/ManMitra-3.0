@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -9,6 +9,8 @@ import { Calendar } from '../ui/calendar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Textarea } from '../ui/textarea';
 import { Calendar as CalendarIcon, Clock, Video, MessageSquare, Star, MapPin, Languages, User, CheckCircle, XCircle, Phone } from 'lucide-react';
+import { useAuth } from '../auth/AuthProvider';
+import webSocketService from '../../services/websocket';
 
 interface CounselorBookingsProps {
   language: string;
@@ -50,7 +52,7 @@ interface Booking {
   notes?: string;
 }
 
-const counselors: Counselor[] = [
+const mockCounselors: Counselor[] = [
   {
     id: '1',
     name: 'Dr. Priya Sharma',
@@ -144,11 +146,37 @@ const sampleBookings: Booking[] = [
   }
 ];
 
+const mockBookings: Booking[] = [
+  {
+    id: '1',
+    counselorId: '1',
+    counselorName: 'Dr. Priya Sharma',
+    date: '2024-01-15',
+    time: '10:00',
+    duration: 60,
+    type: 'video',
+    status: 'upcoming',
+    notes: 'First session - anxiety management'
+  },
+  {
+    id: '2',
+    counselorId: '2',
+    counselorName: 'Dr. Rajesh Kumar',
+    date: '2024-01-10',
+    time: '14:00',
+    duration: 50,
+    type: 'video',
+    status: 'completed',
+    notes: 'Follow-up session on stress management techniques'
+  }
+];
+
 const timeSlots = [
   '09:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00', '17:00'
 ];
 
 export function CounselorBookings({ language }: CounselorBookingsProps) {
+  const { user } = useAuth();
   const [selectedTab, setSelectedTab] = useState('browse');
   const [selectedCounselor, setSelectedCounselor] = useState<Counselor | null>(null);
   const [showBookingDialog, setShowBookingDialog] = useState(false);
@@ -156,6 +184,109 @@ export function CounselorBookings({ language }: CounselorBookingsProps) {
   const [selectedTime, setSelectedTime] = useState('');
   const [selectedType, setSelectedType] = useState<'video' | 'audio' | 'chat'>('video');
   const [bookingNotes, setBookingNotes] = useState('');
+  const [counselors, setCounselors] = useState<Counselor[]>([]);
+  const [bookings, setBookings] = useState<Booking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [lockedSlots, setLockedSlots] = useState<{[key: string]: string}>({});
+  const [bookingInProgress, setBookingInProgress] = useState(false);
+
+  // Load counselors from backend
+  const loadCounselors = async () => {
+    try {
+      const { api } = await import('../../services/api');
+      const response = await api.get('/counselors');
+      
+      if (response.data.success) {
+        setCounselors(response.data.data.counselors || []);
+      }
+    } catch (error) {
+      console.error('Error loading counselors:', error);
+      // Fallback to mock data if API fails
+      setCounselors(mockCounselors);
+    }
+  };
+
+  // Load user's bookings
+  const loadBookings = async () => {
+    try {
+      const { api } = await import('../../services/api');
+      const response = await api.get('/bookings');
+      
+      if (response.data.success) {
+        setBookings(response.data.data.bookings || []);
+      }
+    } catch (error) {
+      console.error('Error loading bookings:', error);
+      // Fallback to mock data if API fails
+      setBookings(mockBookings);
+    }
+  };
+
+  // Setup WebSocket listeners for real-time booking updates
+  useEffect(() => {
+    const setupWebSocket = async () => {
+      if (!user) return;
+      
+      try {
+        if (!webSocketService.isConnected()) {
+          await webSocketService.connect(user.id);
+        }
+
+        // Listen for booking updates
+        webSocketService.on('booking-created', (data) => {
+          console.log('Booking created:', data);
+          loadBookings(); // Refresh bookings list
+        });
+
+        webSocketService.on('booking-cancelled', (data) => {
+          console.log('Booking cancelled:', data);
+          loadBookings(); // Refresh bookings list
+        });
+
+        // Listen for slot locking/releasing
+        webSocketService.on('slot-locked', (data) => {
+          setLockedSlots(prev => ({
+            ...prev,
+            [`${data.counselorId}_${data.timeSlot}`]: data.lockedUntil
+          }));
+        });
+
+        webSocketService.on('slot-released', (data) => {
+          setLockedSlots(prev => {
+            const newSlots = { ...prev };
+            delete newSlots[`${data.counselorId}_${data.timeSlot}`];
+            return newSlots;
+          });
+        });
+
+      } catch (error) {
+        console.error('WebSocket setup failed for bookings:', error);
+      }
+    };
+
+    setupWebSocket();
+
+    return () => {
+      // Cleanup WebSocket listeners
+      if (webSocketService.isConnected()) {
+        webSocketService.off('booking-created', () => {});
+        webSocketService.off('booking-cancelled', () => {});
+        webSocketService.off('slot-locked', () => {});
+        webSocketService.off('slot-released', () => {});
+      }
+    };
+  }, [user]);
+
+  // Load data on component mount
+  useEffect(() => {
+    const loadData = async () => {
+      setLoading(true);
+      await Promise.all([loadCounselors(), loadBookings()]);
+      setLoading(false);
+    };
+    
+    loadData();
+  }, []);
 
   const texts = {
     en: {
@@ -337,22 +468,92 @@ export function CounselorBookings({ language }: CounselorBookingsProps) {
     }
   };
 
-  const handleBookSession = () => {
-    if (!selectedCounselor || !selectedDate || !selectedTime) return;
+  const handleSlotHold = (counselorId: string, timeSlot: string) => {
+    if (webSocketService.isConnected()) {
+      webSocketService.holdBookingSlot(counselorId, timeSlot);
+    }
+  };
+
+  const handleSlotRelease = (counselorId: string, timeSlot: string) => {
+    if (webSocketService.isConnected()) {
+      webSocketService.releaseBookingSlot(counselorId, timeSlot);
+    }
+  };
+
+  const isSlotLocked = (counselorId: string, timeSlot: string) => {
+    const key = `${counselorId}_${timeSlot}`;
+    const lockedUntil = lockedSlots[key];
+    if (!lockedUntil) return false;
     
-    // In a real app, this would call the backend API
-    console.log('Booking session:', {
-      counselorId: selectedCounselor.id,
-      date: selectedDate,
-      time: selectedTime,
-      type: selectedType,
-      notes: bookingNotes
-    });
+    return new Date(lockedUntil) > new Date();
+  };
+
+  const handleBookSession = async () => {
+    if (!selectedCounselor || !selectedDate || !selectedTime || !user) return;
     
-    setShowBookingDialog(false);
-    setSelectedCounselor(null);
-    setBookingNotes('');
-    setSelectedTime('');
+    try {
+      setBookingInProgress(true);
+      
+      // Hold the slot temporarily
+      handleSlotHold(selectedCounselor.id, selectedTime);
+      
+      // Format date properly
+      const formattedDate = selectedDate.toISOString().split('T')[0];
+      
+      // Import API service
+      const { api } = await import('../../services/api');
+      
+      // Call backend booking API
+      const response = await api.post('/bookings', {
+        counselorId: selectedCounselor.id,
+        date: formattedDate,
+        time: selectedTime,
+        type: selectedType,
+        notes: bookingNotes,
+        duration: 60 // Default 60 minutes
+      });
+
+      if (response.data.success) {
+        console.log('Session booked successfully:', response.data.data);
+        
+        // Add new booking to local state immediately
+        const newBooking: Booking = {
+          id: response.data.data.id,
+          counselorId: selectedCounselor.id,
+          counselorName: getLocalizedText(selectedCounselor, 'name').toString(),
+          date: formattedDate,
+          time: selectedTime,
+          duration: 60,
+          type: selectedType,
+          status: 'upcoming',
+          notes: bookingNotes
+        };
+        setBookings(prev => [newBooking, ...prev]);
+        
+        // Show success message
+        alert('Session booked successfully! You will receive a confirmation.');
+        
+        setShowBookingDialog(false);
+        setSelectedCounselor(null);
+        setBookingNotes('');
+        setSelectedTime('');
+        
+        // Switch to bookings tab to show the new booking
+        setSelectedTab('bookings');
+      }
+    } catch (error: any) {
+      console.error('Booking error:', error);
+      
+      // Release the slot if booking failed
+      if (selectedCounselor) {
+        handleSlotRelease(selectedCounselor.id, selectedTime);
+      }
+      
+      const errorMessage = error.response?.data?.message || 'Failed to book session. Please try again.';
+      alert(errorMessage);
+    } finally {
+      setBookingInProgress(false);
+    }
   };
 
   return (
@@ -485,8 +686,8 @@ export function CounselorBookings({ language }: CounselorBookingsProps) {
 
           <TabsContent value="bookings">
             <div className="space-y-4">
-              {sampleBookings.length > 0 ? (
-                sampleBookings.map((booking) => (
+              {bookings.length > 0 ? (
+                bookings.map((booking) => (
                   <Card key={booking.id}>
                     <CardContent className="p-6">
                       <div className="flex items-center justify-between mb-4">
@@ -568,11 +769,21 @@ export function CounselorBookings({ language }: CounselorBookingsProps) {
                     <SelectValue placeholder={t.selectTime} />
                   </SelectTrigger>
                   <SelectContent>
-                    {timeSlots.map((time) => (
-                      <SelectItem key={time} value={time}>
-                        {time}
-                      </SelectItem>
-                    ))}
+                    {timeSlots.map((time) => {
+                      const isLocked = selectedCounselor && isSlotLocked(selectedCounselor.id, time);
+                      return (
+                        <SelectItem 
+                          key={time} 
+                          value={time}
+                          disabled={isLocked}
+                        >
+                          <div className="flex items-center justify-between w-full">
+                            <span>{time}</span>
+                            {isLocked && <Badge variant="outline" className="ml-2 text-xs">Held</Badge>}
+                          </div>
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
@@ -609,12 +820,22 @@ export function CounselorBookings({ language }: CounselorBookingsProps) {
               <div className="flex gap-2">
                 <Button 
                   onClick={handleBookSession}
-                  disabled={!selectedDate || !selectedTime}
+                  disabled={!selectedDate || !selectedTime || bookingInProgress || !user}
                   className="flex-1"
                 >
-                  {t.confirmBooking}
+                  {bookingInProgress ? 'Booking...' : t.confirmBooking}
                 </Button>
-                <Button variant="outline" onClick={() => setShowBookingDialog(false)}>
+                <Button 
+                  variant="outline" 
+                  onClick={() => {
+                    // Release held slot when canceling
+                    if (selectedCounselor && selectedTime) {
+                      handleSlotRelease(selectedCounselor.id, selectedTime);
+                    }
+                    setShowBookingDialog(false);
+                  }}
+                  disabled={bookingInProgress}
+                >
                   {t.cancel}
                 </Button>
               </div>

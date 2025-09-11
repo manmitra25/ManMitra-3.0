@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { CrisisDetection } from '../CrisisManagement';
 import { useAccessibility } from '../AccessibilityProvider';
+import { useAuth } from '../auth/AuthProvider';
 
 interface Message {
   id: string;
@@ -153,6 +154,7 @@ export function EnhancedBestieChat({
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { announceToScreenReader } = useAccessibility();
+  const { user } = useAuth();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -255,29 +257,121 @@ export function EnhancedBestieChat({
       return;
     }
 
-    // Generate Bestie response
-    const bestieResponse = await simulateBestieResponse(messageContent, selectedTopic || undefined);
-    setMessages(prev => [...prev, bestieResponse]);
-    
-    announceToScreenReader(`Bestie responded: ${bestieResponse.content}`);
+    // Show typing indicator
+    setIsTyping(true);
+
+    try {
+      // Import the API service
+      const { api } = await import('../../services/api');
+      
+      console.log('Enhanced: Sending message to backend:', messageContent);
+      
+      // Send message via Node.js backend which will call FastAPI
+      if (!sessionId) {
+        throw new Error('No session ID available. Please restart the conversation.');
+      }
+      
+      const response = await api.post('/chat/send-message', {
+        sessionId: sessionId,
+        message: messageContent,
+        language: language || 'en'
+      });
+
+      console.log('Enhanced: Backend response:', response.data);
+      const backendResponse = response.data;
+      
+      if (backendResponse.success && backendResponse.data) {
+        const aiResponse = backendResponse.data;
+        
+        const bestieMessage: Message = {
+          id: `msg_${Date.now()}_ai`,
+          content: aiResponse.response,
+          sender: 'bestie',
+          timestamp: new Date().toISOString(),
+          language: language,
+          agent: aiResponse.agent || 'listener',
+          crisis_detected: aiResponse.crisisDetected || false
+        };
+
+        setMessages(prev => [...prev, bestieMessage]);
+        announceToScreenReader(`Bestie responded: ${bestieMessage.content}`);
+
+        // Handle crisis detection
+        if (aiResponse.crisisDetected && aiResponse.crisisLevel) {
+          setShowCrisisModal(true);
+        }
+      } else {
+        throw new Error(backendResponse.message || 'Failed to get response from backend');
+      }
+
+    } catch (error) {
+      console.error('Error sending message to AI:', error);
+      
+      // Fallback to offline response if network fails
+      const bestieResponse = await simulateBestieResponse(messageContent, selectedTopic || undefined);
+      setMessages(prev => [...prev, bestieResponse]);
+      announceToScreenReader(`Bestie responded: ${bestieResponse.content}`);
+      
+      if (!navigator.onLine) {
+        console.log('Offline mode - using cached response');
+      }
+    } finally {
+      setIsTyping(false);
+    }
   };
 
-  const handleTopicSelect = (topic: string) => {
+  const handleTopicSelect = async (topic: string) => {
     setSelectedTopic(topic);
-    const prompt = TOPIC_PROMPTS[topic as keyof typeof TOPIC_PROMPTS];
-    const localizedPrompt = prompt?.[language as keyof typeof prompt] || prompt?.en || "Hi! I'm here to listen. How are you feeling today?";
     
-    const welcomeMessage: Message = {
-      id: `msg_${Date.now()}`,
-      content: localizedPrompt,
-      sender: 'bestie',
-      timestamp: new Date().toISOString(),
-      agent: 'listener',
-      language: language
-    };
+    try {
+      // Start chat session with backend
+      const { api } = await import('../../services/api');
+      const response = await api.post('/chat/start-session', {
+        topic: topic,
+        language: language || 'en',
+        isAnonymous: isAnonymous
+      });
+      
+      const sessionData = response.data.data;
+      setSessionId(sessionData.sessionId);
+      
+      const prompt = TOPIC_PROMPTS[topic as keyof typeof TOPIC_PROMPTS];
+      const localizedPrompt = prompt?.[language as keyof typeof prompt] || prompt?.en || "Hi! I'm here to listen. How are you feeling today?";
+      
+      const welcomeMessage: Message = {
+        id: `msg_${Date.now()}`,
+        content: localizedPrompt,
+        sender: 'bestie',
+        timestamp: new Date().toISOString(),
+        agent: 'listener',
+        language: language
+      };
 
-    setMessages([welcomeMessage]);
-    announceToScreenReader(`Topic selected: ${topic}. Bestie says: ${localizedPrompt}`);
+      setMessages([welcomeMessage]);
+      announceToScreenReader(`Topic selected: ${topic}. Bestie says: ${localizedPrompt}`);
+      
+    } catch (error) {
+      console.error('Error starting enhanced chat session:', error);
+      
+      // Fallback to temp session
+      const fallbackSessionId = `session_${Date.now()}`;
+      setSessionId(fallbackSessionId);
+      
+      const prompt = TOPIC_PROMPTS[topic as keyof typeof TOPIC_PROMPTS];
+      const localizedPrompt = prompt?.[language as keyof typeof prompt] || prompt?.en || "Hi! I'm here to listen. How are you feeling today?";
+      
+      const welcomeMessage: Message = {
+        id: `msg_${Date.now()}`,
+        content: localizedPrompt,
+        sender: 'bestie',
+        timestamp: new Date().toISOString(),
+        agent: 'listener',
+        language: language
+      };
+
+      setMessages([welcomeMessage]);
+      announceToScreenReader(`Topic selected: ${topic}. Bestie says: ${localizedPrompt}`);
+    }
   };
 
   const handleCrisisEscalation = (escalationData: any) => {

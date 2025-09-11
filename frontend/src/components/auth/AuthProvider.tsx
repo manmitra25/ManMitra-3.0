@@ -89,43 +89,84 @@ export function AuthProvider({ children }: AuthProviderProps) {
   };
 
   const refreshProfile = async () => {
-    // Mock implementation - just reload from storage
-    const stored = getStoredAuth();
-    if (stored) {
-      setProfile(stored.profile);
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setUser(null);
+        setProfile(null);
+        return;
+      }
+
+      const { api } = await import('../../services/api');
+      const response = await api.get('/auth/profile');
+      const profileData = response.data.data;
+      
+      setProfile(profileData);
+    } catch (error: any) {
+      console.error('Profile refresh error:', error);
+      if (error.response?.status === 401) {
+        // Token expired or invalid
+        await signOut();
+      }
     }
   };
 
   useEffect(() => {
-    // Load initial auth state from localStorage
-    setTimeout(() => {
-      const stored = getStoredAuth();
-      if (stored) {
-        setUser(stored.user);
-        setProfile(stored.profile);
+    // Initialize auth state from token
+    const initAuth = async () => {
+      const token = localStorage.getItem('token');
+      if (token) {
+        try {
+          const { api } = await import('../../services/api');
+          const response = await api.get('/auth/profile');
+          const { user: userData, ...profileData } = response.data.data;
+          
+          setUser(userData);
+          setProfile(profileData);
+        } catch (error: any) {
+          console.error('Auth initialization error:', error);
+          if (error.response?.status === 401) {
+            // Clear invalid tokens
+            localStorage.removeItem('token');
+            localStorage.removeItem('refreshToken');
+          }
+        }
       }
       setLoading(false);
-    }, 100);
+    };
+    
+    initAuth();
   }, []);
 
   const signIn = async (email: string, password: string) => {
     try {
       setLoading(true);
-      const users = getStoredUsers();
-      const foundUser = users.find(u => u.user.email === email && u.password === password);
       
-      if (!foundUser) {
-        return { error: 'Invalid email or password' };
-      }
+      // Import API service
+      const { api } = await import('../../services/api');
+      
+      // Call backend login API
+      const response = await api.post('/auth/login', {
+        email,
+        password
+      });
 
-      setUser(foundUser.user);
-      setProfile(foundUser.profile);
-      setStoredAuth({ user: foundUser.user, profile: foundUser.profile });
+      const { token, refreshToken, user: userData, profile: profileData } = response.data.data;
 
-      return {};
-    } catch (error) {
-      console.error('Unexpected sign in error:', error);
-      return { error: 'An unexpected error occurred during sign in' };
+      // Store tokens
+      localStorage.setItem('token', token);
+      localStorage.setItem('refreshToken', refreshToken);
+      
+      // Set user state
+      setUser(userData);
+      setProfile(profileData);
+      setStoredAuth({ user: userData, profile: profileData });
+
+      return { success: true };
+    } catch (error: any) {
+      console.error('Sign in error:', error);
+      const errorMessage = error.response?.data?.message || 'An unexpected error occurred during sign in';
+      return { error: errorMessage };
     } finally {
       setLoading(false);
     }
@@ -141,46 +182,39 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       setLoading(true);
       
-      const users = getStoredUsers();
+      // Import API service
+      const { api } = await import('../../services/api');
       
-      // Check if user already exists
-      if (users.find(u => u.user.email === userData.email)) {
-        return { error: 'User with this email already exists' };
-      }
-
-      // Create new user
-      const newUser: User = {
-        id: Date.now().toString(),
-        email: userData.email
-      };
-
-      const newProfile: UserProfile = {
-        id: newUser.id,
+      // Call backend signup API
+      const response = await api.post('/auth/signup', {
         email: userData.email,
+        password: userData.password,
         name: userData.name,
-        role: (userData.role as 'student' | 'counselor' | 'admin') || 'student',
+        role: userData.role || 'student',
         institution: userData.institution,
         privacy_consents: {
           share_chat_history: false,
           crisis_escalation: true,
           analytics_participation: false
         }
-      };
+      });
 
-      // Store user
-      users.push({ user: newUser, profile: newProfile, password: userData.password });
-      setStoredUsers(users);
+      const { token, refreshToken, user: newUser, profile: newProfile } = response.data.data;
 
-      // Auto sign in
+      // Store tokens
+      localStorage.setItem('token', token);
+      localStorage.setItem('refreshToken', refreshToken);
+      
+      // Set user state
       setUser(newUser);
       setProfile(newProfile);
       setStoredAuth({ user: newUser, profile: newProfile });
-      
-      return {};
-      
-    } catch (error) {
+
+      return { success: true };
+    } catch (error: any) {
       console.error('Sign up error:', error);
-      return { error: 'Failed to create account. Please try again.' };
+      const errorMessage = error.response?.data?.message || 'An unexpected error occurred during sign up';
+      return { error: errorMessage };
     } finally {
       setLoading(false);
     }
@@ -190,6 +224,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
     try {
       setLoading(true);
       
+      // Call backend logout endpoint
+      const token = localStorage.getItem('token');
+      if (token) {
+        try {
+          const { api } = await import('../../services/api');
+          await api.post('/auth/logout');
+        } catch (error) {
+          console.error('Logout API error:', error);
+          // Continue with local logout even if API fails
+        }
+      }
+      
+      // Clear all auth data
+      localStorage.removeItem('token');
+      localStorage.removeItem('refreshToken');
       setUser(null);
       setProfile(null);
       setStoredAuth(null);
@@ -206,31 +255,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return { error: 'User not authenticated' };
       }
 
-      // Update the profile with new consents
-      const updatedProfile = {
-        ...profile,
+      const { api } = await import('../../services/api');
+      const response = await api.put('/auth/profile', {
         privacy_consents: {
           ...profile.privacy_consents,
           ...consents
         }
-      };
+      });
 
-      // Update in storage
-      const users = getStoredUsers();
-      const userIndex = users.findIndex(u => u.user.id === user.id);
-      if (userIndex >= 0) {
-        users[userIndex].profile = updatedProfile;
-        setStoredUsers(users);
-      }
-
-      // Update local state
+      const updatedProfile = response.data.data;
       setProfile(updatedProfile);
       setStoredAuth({ user, profile: updatedProfile });
       
       return {};
-    } catch (error) {
+    } catch (error: any) {
       console.error('Privacy settings update error:', error);
-      return { error: 'Failed to update privacy settings' };
+      const errorMessage = error.response?.data?.message || 'Failed to update privacy settings';
+      return { error: errorMessage };
     }
   };
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -7,6 +7,7 @@ import { RadioGroup, RadioGroupItem } from '../ui/radio-group';
 import { Label } from '../ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import { Calendar, TrendingUp, TrendingDown, Minus, Heart, Brain, AlertTriangle, CheckCircle, BarChart3, Calendar as CalendarIcon } from 'lucide-react';
+import { useAuth } from '../auth/AuthProvider';
 
 interface DailyMoodCheckProps {
   language: string;
@@ -14,9 +15,12 @@ interface DailyMoodCheckProps {
 
 interface MoodEntry {
   date: string;
-  phq9Score: number;
-  gad7Score: number;
+  phq9Score?: number;
+  gad7Score?: number;
   notes?: string;
+  assessmentType: 'phq9' | 'gad7';
+  id?: string;
+  userId?: string;
 }
 
 interface Question {
@@ -137,13 +141,13 @@ const responseOptions = [
 
 // Sample mood data for the last 7 days
 const sampleMoodData: MoodEntry[] = [
-  { date: '2024-01-01', phq9Score: 8, gad7Score: 6 },
-  { date: '2024-01-02', phq9Score: 10, gad7Score: 8 },
-  { date: '2024-01-03', phq9Score: 6, gad7Score: 5 },
-  { date: '2024-01-04', phq9Score: 7, gad7Score: 7 },
-  { date: '2024-01-05', phq9Score: 5, gad7Score: 4 },
-  { date: '2024-01-06', phq9Score: 9, gad7Score: 9 },
-  { date: '2024-01-07', phq9Score: 4, gad7Score: 3 }
+  { date: '2024-01-01', phq9Score: 8, gad7Score: 6, assessmentType: 'phq9' },
+  { date: '2024-01-02', phq9Score: 10, gad7Score: 8, assessmentType: 'phq9' },
+  { date: '2024-01-03', phq9Score: 6, gad7Score: 5, assessmentType: 'gad7' },
+  { date: '2024-01-04', phq9Score: 7, gad7Score: 7, assessmentType: 'phq9' },
+  { date: '2024-01-05', phq9Score: 5, gad7Score: 4, assessmentType: 'gad7' },
+  { date: '2024-01-06', phq9Score: 9, gad7Score: 9, assessmentType: 'phq9' },
+  { date: '2024-01-07', phq9Score: 4, gad7Score: 3, assessmentType: 'gad7' }
 ];
 
 const getScoreSeverity = (score: number, type: 'phq9' | 'gad7') => {
@@ -162,11 +166,16 @@ const getScoreSeverity = (score: number, type: 'phq9' | 'gad7') => {
 };
 
 export function DailyMoodCheck({ language }: DailyMoodCheckProps) {
+  const { user } = useAuth();
   const [currentView, setCurrentView] = useState<'dashboard' | 'phq9' | 'gad7' | 'results'>('dashboard');
   const [phq9Responses, setPhq9Responses] = useState<Record<string, string>>({});
   const [gad7Responses, setGad7Responses] = useState<Record<string, string>>({});
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [completedAssessment, setCompletedAssessment] = useState<'phq9' | 'gad7' | null>(null);
+  const [moodHistory, setMoodHistory] = useState<MoodEntry[]>([]);
+  const [lastCompleted, setLastCompleted] = useState<{ phq9?: string; gad7?: string }>({});
+  const [loading, setLoading] = useState(false);
+  const [submittingAssessment, setSubmittingAssessment] = useState(false);
 
   const texts = {
     en: {
@@ -290,6 +299,45 @@ export function DailyMoodCheck({ language }: DailyMoodCheckProps) {
 
   const t = texts[language as keyof typeof texts] || texts.en;
 
+  // Load mood history and questions from backend
+  useEffect(() => {
+    const loadMoodData = async () => {
+      if (!user) return;
+      
+      try {
+        setLoading(true);
+        const { api } = await import('../../services/api');
+        
+        // Load mood history
+        const historyResponse = await api.get('/mood/history');
+        setMoodHistory(historyResponse.data.data || []);
+        
+        // Get last completed dates
+        const history = historyResponse.data.data || [];
+        const lastPhq9 = history
+          .filter((entry: MoodEntry) => entry.assessmentType === 'phq9')
+          .sort((a: MoodEntry, b: MoodEntry) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+        const lastGad7 = history
+          .filter((entry: MoodEntry) => entry.assessmentType === 'gad7')
+          .sort((a: MoodEntry, b: MoodEntry) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+        
+        setLastCompleted({
+          phq9: lastPhq9?.date,
+          gad7: lastGad7?.date
+        });
+        
+      } catch (error) {
+        console.error('Error loading mood data:', error);
+        // Use sample data as fallback
+        setMoodHistory(sampleMoodData.map(entry => ({ ...entry, assessmentType: 'phq9' as const })));
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadMoodData();
+  }, [user]);
+
   const getLocalizedText = (question: Question, language: string) => {
     if (language === 'hi' && question.textHi) return question.textHi;
     if (language === 'ur' && question.textUr) return question.textUr;
@@ -306,9 +354,70 @@ export function DailyMoodCheck({ language }: DailyMoodCheckProps) {
     return Object.values(responses).reduce((sum, value) => sum + parseInt(value), 0);
   };
 
-  const handleAssessmentComplete = (type: 'phq9' | 'gad7') => {
-    setCompletedAssessment(type);
-    setCurrentView('results');
+  const getLastCompletedText = (dateString?: string) => {
+    if (!dateString) return t.never;
+    
+    const date = new Date(dateString);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    
+    const isToday = date.toDateString() === today.toDateString();
+    const isYesterday = date.toDateString() === yesterday.toDateString();
+    
+    if (isToday) return t.today;
+    if (isYesterday) return t.yesterday;
+    
+    const daysAgo = Math.floor((today.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+    if (daysAgo > 0 && daysAgo < 30) {
+      return `${daysAgo} ${t.daysAgo}`;
+    }
+    
+    return date.toLocaleDateString();
+  };
+
+  const handleAssessmentComplete = async (type: 'phq9' | 'gad7') => {
+    try {
+      setSubmittingAssessment(true);
+      const responses = type === 'phq9' ? phq9Responses : gad7Responses;
+      const score = calculateScore(responses);
+      
+      // Submit assessment to backend
+      const { api } = await import('../../services/api');
+      const response = await api.post(`/mood/${type}/submit`, {
+        responses,
+        score,
+        language: language || 'en',
+        assessmentDate: new Date().toISOString()
+      });
+      
+      // Update mood history with new entry
+      const newEntry: MoodEntry = {
+        id: response.data.data.id,
+        date: new Date().toISOString().split('T')[0],
+        assessmentType: type,
+        [type === 'phq9' ? 'phq9Score' : 'gad7Score']: score
+      };
+      
+      setMoodHistory(prev => [newEntry, ...prev]);
+      
+      // Update last completed
+      setLastCompleted(prev => ({
+        ...prev,
+        [type]: new Date().toISOString().split('T')[0]
+      }));
+      
+      setCompletedAssessment(type);
+      setCurrentView('results');
+      
+    } catch (error) {
+      console.error('Error submitting assessment:', error);
+      // Fallback to local completion
+      setCompletedAssessment(type);
+      setCurrentView('results');
+    } finally {
+      setSubmittingAssessment(false);
+    }
   };
 
   const renderAssessment = (type: 'phq9' | 'gad7') => {
@@ -375,9 +484,9 @@ export function DailyMoodCheck({ language }: DailyMoodCheckProps) {
               {isLastQuestion ? (
                 <Button 
                   onClick={() => handleAssessmentComplete(type)}
-                  disabled={!canProceed}
+                  disabled={!canProceed || submittingAssessment}
                 >
-                  {t.submit}
+                  {submittingAssessment ? 'Submitting...' : t.submit}
                 </Button>
               ) : (
                 <Button 
@@ -515,7 +624,7 @@ export function DailyMoodCheck({ language }: DailyMoodCheckProps) {
             <CardContent>
               <div className="flex items-center justify-between mb-4">
                 <span className="text-sm text-muted-foreground">
-                  {t.lastCompleted}: {t.yesterday}
+                  {t.lastCompleted}: {getLastCompletedText(lastCompleted.phq9)}
                 </span>
                 <Badge variant="outline">9 questions</Badge>
               </div>
@@ -540,7 +649,7 @@ export function DailyMoodCheck({ language }: DailyMoodCheckProps) {
             <CardContent>
               <div className="flex items-center justify-between mb-4">
                 <span className="text-sm text-muted-foreground">
-                  {t.lastCompleted}: {t.today}
+                  {t.lastCompleted}: {getLastCompletedText(lastCompleted.gad7)}
                 </span>
                 <Badge variant="outline">7 questions</Badge>
               </div>
