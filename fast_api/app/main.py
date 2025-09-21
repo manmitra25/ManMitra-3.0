@@ -30,7 +30,6 @@ app.add_middleware(
 
 # Include API routes
 app.include_router(api_router, prefix="/api")
-
 # Health check endpoint
 @app.get("/", tags=["Health Check"])
 async def root():

@@ -62,6 +62,26 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
     
+    # Database
+    MONGO_URI: str = Field(default="mongodb://localhost:27017", env="MONGO_URI")
+    
+    # JWT Secret
+    JWT_SECRET: str = Field(default="SuperSecretKey123", env="JWT_SECRET")
+    
+    # Message validation
+    MAX_MESSAGE_LENGTH: int = Field(default=2000, env="MAX_MESSAGE_LENGTH")
+    
+    # Crisis detection keywords
+    CRISIS_KEYWORDS: str = Field(
+        default="suicide,kill myself,end it,don't want to live,self harm,hurt myself,die,death,dead,not worth living,better off dead,end my life",
+        env="CRISIS_KEYWORDS"
+    )
+    
+    @property
+    def crisis_keywords_list(self) -> list:
+        """Convert crisis keywords string to list"""
+        return [keyword.strip() for keyword in self.CRISIS_KEYWORDS.split(",")]
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
