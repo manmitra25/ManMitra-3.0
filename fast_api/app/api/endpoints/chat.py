@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
-from app.services.ai_services import bestie_service, moderation_service
+from fast_api.app.api.services.ai_services import bestie_service, moderation_service
 
 router = APIRouter()
 

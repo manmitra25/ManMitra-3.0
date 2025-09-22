@@ -1,6 +1,6 @@
 # routes/counselor_routes.py
 from fastapi import APIRouter, Depends, HTTPException
-from services.analytics import compute_counselor_analytics
+from fast_api.app.api.services.analytics import compute_counselor_analytics
 from services.pdf_generator import generate_pdf_report
 from models.schemas import AnalyticsRequest, PDFRequest
 from dependencies.auth import get_current_user  # placeholder for your auth

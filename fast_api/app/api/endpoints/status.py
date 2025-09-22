@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from typing import Dict, Any
-from app.services.ai_services import bestie_service
+from fast_api.app.api.services.ai_services import bestie_service
 
 router = APIRouter()
 

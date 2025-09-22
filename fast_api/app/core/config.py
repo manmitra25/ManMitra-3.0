@@ -31,9 +31,8 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = Field(default="gemini-2.0-flash-exp", env="GEMINI_MODEL")
     
     # AI Service Configuration
-    MAX_CHAT_HISTORY: int = Field(default=10, env="MAX_CHAT_HISTORY")
-    MAX_MESSAGE_LENGTH: int = Field(default=1000, env="MAX_MESSAGE_LENGTH")
-    AI_RESPONSE_TIMEOUT: int = Field(default=30, env="AI_RESPONSE_TIMEOUT")
+    MAX_CONTEXT_MESSAGES: int = int(os.getenv("MAX_CONTEXT_MESSAGES", "10"))
+    SUMMARIZE_THRESHOLD: int = int(os.getenv("SUMMARIZE_THRESHOLD", "20"))
     
     # Crisis Detection Configuration
     CRISIS_KEYWORDS: str = Field(
@@ -63,7 +62,9 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
     
     # Database
+    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
     MONGO_URI: str = Field(default="mongodb://localhost:27017", env="MONGO_URI")
+    MONGO_DB_NAME: str = os.getenv("MONGO_DB_NAME", "chatbot_db")
     
     # JWT Secret
     JWT_SECRET: str = Field(default="SuperSecretKey123", env="JWT_SECRET")
